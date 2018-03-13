@@ -1,0 +1,413 @@
+---
+title: "Programming for R Analytics Final Project"
+author: "Name: Sathwik Chenna Madhavuni Andrew ID: schennam"
+date: 'Due Dec 16'
+output: 
+  html_document:
+    toc: true
+    theme: paper
+    highlight: tango
+---
+
+
+### Introduction
+
+This project serves as the helping guide for the Pittsbugh government municipality to analyse the pittsburgh neighbourhood areas and come up with the rebate program so that they can reduce the stormwater runoff. The data is taken from the Pittsburgh region data center. Data has been cleaned, analyzed and proper judgements were made. Finally, the value of the installation of trees and rain gardens are calculated and appropriate decisions are taken. 
+Hence, the cost effective strategies are found and might be implemented.
+
+
+```{r}
+require(ggplot2)
+require(tidyverse)
+require(forcats)
+require(polycor)
+require(corrplot)
+require(reshape)
+```
+
+
+### 1. Importing the Data
+
+Downloading the data from the Pittsburgh Data Center:
+
+```{r}
+#downloading the data
+sales.county <- read.csv("https://s3.amazonaws.com/aws-website-programminginrforanalytics-tbal0/data/sales_county.csv", header = TRUE)
+assessments.city <- read.csv("https://s3.amazonaws.com/aws-website-programminginrforanalytics-tbal0/data/assessments_city.csv", header = TRUE)
+land.use.city <- read.csv("https://s3.amazonaws.com/aws-website-programminginrforanalytics-tbal0/data/land_use_city.csv", header = TRUE)
+sewersheds <- read.csv("https://s3.amazonaws.com/aws-website-programminginrforanalytics-tbal0/data/sewersheds.csv", header = TRUE)
+```
+
+### 2. Data Cleaning
+
+After intial inspection, it is found that, the data has a lot of duplicates and NAs.
+All of them have been removed properly as follows:
+
+```{r}
+
+#Removing the NA values
+sales.county.without.na <- na.omit(sales.county)
+#Removing the duplicates
+sales.county.distinct <- sales.county.without.na  %>% distinct
+
+
+#Removing the NA values
+assessments.city.without.na<- na.omit(assessments.city)
+#Removing the duplicates
+assessments.city.distinct <- assessments.city.without.na  %>% distinct
+
+
+#Removing the NA values
+sewersheds.without.na <- na.omit(sewersheds)
+#Removing the duplicates
+sewersheds.distinct <- sewersheds.without.na  %>% distinct
+
+
+#Removing the NA values
+land.use.city.without.na <- na.omit(land.use.city)
+#Removing the duplicates
+land.use.city.distinct <-land.use.city.without.na  %>% distinct
+
+```
+
+### 3. Data Preparation
+
+For each property, there are so many date values, which mean, properties were sold many times. 
+Only the latest sale date is being considered here so that we consider their latest value.
+
+```{r}
+#Factoring the Date values needed later purposes
+sales.county.distinct$SALEDATE<-as.Date(sales.county.distinct$SALEDATE)
+
+sales.county.latest.date<-sales.county.distinct %>% group_by(PARID) %>% summarise(SALEDATE = max(SALEDATE))
+
+sales.county.latest.data.all.columns<-inner_join(sales.county.distinct,sales.county.latest.date)
+
+```
+
+
+Land use areas dataframe has been pivoted such that we get the sqft area values of bulidings, trees, impervious and open space areas.
+
+```{r}
+
+land.use.areas <- cast(land.use.city.distinct, PARID ~ LUnew)
+land.use.areas[is.na(land.use.areas)] <- 0
+
+```
+
+
+
+### 4. Joining of Data
+
+Property assessments, sale details and land use details dataframes are joined using PARID as the Primary Key.
+Now, for each property, we have the sale and land details.
+
+
+```{r}
+final.sample<-inner_join(assessments.city.distinct,sales.county.latest.data.all.columns,by="PARID")
+final.sample<-inner_join(final.sample,land.use.areas,by="PARID")
+```
+
+Sewershed data has been added at the end after the rebate calculation has been done for the convinience.
+
+### 5. Data Filtering and Formating
+
+There are many sales which are of less importance and can mislead us. Few of them are 'LOVE an AFFECTION SALE' and 'TAX SALE'. Such unnecessary sales have been removed and only 'VALID' and 'OTHER VALID' sales are taken.
+Also, there are few sales where the price is very less. For example, for one such property,it is $2000. Such properties are removed.
+Such properties can skew our model and hence they are removed. Please find the distribution of the price graph.
+
+```{r}
+
+valid.final.sample<-filter(final.sample,(SALEDESC=="VALID SALE" | SALEDESC=="OTHER VALID")  & PRICE>2000)
+
+```
+
+HOMESTEADFLAG flag has got empty spaces if the properties are not occupied by the owners. They have been replaced by 'RENT' keywords.
+
+```{r}
+valid.final.sample$HOMESTEADFLAG <- factor(valid.final.sample$HOMESTEADFLAG, levels = c(levels(valid.final.sample$HOMESTEADFLAG),"RENT"))
+
+valid.final.sample$HOMESTEADFLAG[is.na(valid.final.sample$HOMESTEADFLAG)] <- "RENT"
+
+```
+
+Zipcode has got strings and they have been formatted as 'FACTOR' for the regression analysis.
+
+```{r}
+valid.final.sample$ZIP_CODE<-as.factor(valid.final.sample$ZIP_CODE)
+
+```
+
+### 6.Data Exploration via plots
+
+#### a. Normal distribution of Price
+
+Following graph shows the distribution of prices in the data. This graph helps us to understand the data and then use the regression model.
+
+```{r}
+
+ggplot(valid.final.sample,aes(x=PRICE)) + geom_histogram(colour="black", fill="#DD8888")+ggtitle("Distribution of Prices in the filtered data") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+#### b. Distribution of price vs Condition and Owners
+The price is varying with different owners and with different conditions of the property.
+These factors are really influencing the prices, and they have been used for the regression plot.
+
+```{r}
+
+ggplot(valid.final.sample,aes(x=CONDITIONDESC,y=PRICE,col=OWNERDESC)) + geom_point()+ggtitle("Distribution of prices vs Condition and Owner") +   theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+
+#### c. Distribution of price vs Area of the property
+Lotarea is also causing the varation in the prices. Zipcode is also a predictor in the prices.
+We are taking the zipcode as the representation of the expensive and the least expensive areas and hence zipcodes accounts for the variation in the price.
+
+
+```{r}
+
+ggplot(data = valid.final.sample, aes(y = PRICE, x = LOTAREA, color = ZIP_CODE))   + geom_point() +  facet_wrap(~CONDITIONDESC) +ggtitle("Price vs Lotarea") +  theme(plot.title = element_text(hjust = 0.5))
+
+```
+
+
+
+### 7. Finding the correlation among the variables 
+
+In order to perform the regression analysis, we need the variables which are highly correlated with the PRICE value. We need to account all the causal effects in the regression equation. We need to remove the selection bias from the model.
+
+First, let us get the correlation between the variables. Following
+```{r}
+           
+
+regression.dataset<-select(valid.final.sample, PRICE, FINISHEDLIVINGAREA, LOTAREA ,ZIP_CODE, open.space  ,  trees, impervious,bldgs)
+regression.dataset[is.na(regression.dataset)]<- 0
+project.corrplot<-hetcor(regression.dataset)
+corrplot(project.corrplot$correlations)
+
+```
+
+
+### 8. Summary table of the final sample
+
+Following is the sample taken for the regression model:
+```{r}
+head(valid.final.sample)
+
+```
+
+
+### 9. Multiple Linear Regression Model
+
+After doing the explanatory analysis of the data, and the required correlation graphs, 
+we have now sort of understood which variables are actually effecting the price.
+Following variables are taken as predictors for the multiple linear regression model:
+PRICE is the y variable.
+
+
+FINISHEDLIVINGAREA, CONDITIONDESC, LOTAREA ,  CONDITIONDESC , OWNERDESC, ZIP_CODE , open.space ,trees are the predictors. 
+As it can be seen from the above correlation graphs and explanatory graphs, the lot area, conditiondesc, zipcode and ownerdesc etc. these variables are strong predictors of the price. 
+
+
+We are considering the log-level plot here to increase the linearity of the model.
+Hence, the interpreation would be the different for this i.e. it is in terms of percentages of y with one unit of x.
+
+```{r}
+
+model<-lm(log(PRICE)~ FINISHEDLIVINGAREA+ CONDITIONDESC+ LOTAREA +  CONDITIONDESC + OWNERDESC  +ZIP_CODE  + open.space + trees ,valid.final.sample)
+summary(model)
+
+```
+### 9. Interpreting the coefficients of the model
+
+Since our variables of interest are trees and open.space.
+Let us consider the coefficients of these two varibles.
+
+TREE:
+trees                           -0.000010103  0.000004304  -2.348 0.018940 * 
+the coefficient of tree is -0.000010103 and it is significant at 95% level.
+which mean, for every unit increase in the sq ft of trees, there is ((exp^0.000010103)-1)*100% percentage decrease in price. 
+it is decreasing due to the negative value.
+
+OPEN SPACE:
+open.space                       0.000017187  0.000008303   2.070 0.038502 * 
+the coefficient of open.space is 0.000017187 and it is significant at 95% level.
+which mean, for every unit increase in the sq ft of open.space, there is ((exp^0.000017187)-1)*100% percentage increase in price. 
+it is increasing due to the positive coefficient value.
+
+```{r}
+plot(model, which = 1)
+
+```
+
+The Residuals and Fitted Values plot digram shows there is enough homoscedasticity in the final data sample we have chosen. Hence, we can move forward with this model.
+
+
+
+```{r}
+plot(model,which=2)
+
+```
+
+The Q-Q plot shows that our data is not skewed and the linear model is good to go with.
+
+
+
+
+
+
+### Question 1
+(1) How much do residential property owners value - if at all - exterior open space?
+
+**ANSWER**
+
+The coefficient of open.space from the regression model can be used to answer this:
+we are finding the value of open space for each property and then summing it up.
+Finally dividing the total value by the total open space and thereby we get the mean value of open space per sq ft.
+
+```{r}
+
+open.space.coefficient.percent <-(exp(model$coefficients['open.space'])-1)*100
+summarized.properties.sample<-valid.final.sample
+summarized.properties.sample<-mutate(summarized.properties.sample, open.space.value = (PRICE*(open.space.coefficient.percent/100)))
+mean.value.per.sq.ft.of.open.space<- sum(summarized.properties.sample$open.space.value)/sum(summarized.properties.sample$open.space)
+
+print(mean.value.per.sq.ft.of.open.space)
+
+```
+
+The mean value of open space per square feet is 0.003711241.
+
+
+
+
+### Question 2
+(2) How much do residential property owners value - if at all - trees?
+
+**ANSWER**
+The coefficient of trees from the regression model can be used to answer this:
+
+we are finding the value of trees for each property and then summing it up.
+Finally dividing the total value by the total trees space and thereby we get the mean value of trees per sq ft.
+
+```{r}
+
+trees.coefficient.percent <-(exp(model$coefficients['trees'])-1)*100
+summarized.properties.sample<-mutate(summarized.properties.sample,trees.value = (PRICE*(trees.coefficient.percent/100)))
+mean.value.per.sq.ft.trees<- sum(summarized.properties.sample$trees.value)/sum(summarized.properties.sample$trees)
+
+print(mean.value.per.sq.ft.trees)
+
+```
+The mean value of trees per square feet is -0.001154409.
+
+
+
+(2) How much do residential property owners value - if at all - trees?
+
+**ANSWER**
+The coefficient of trees from the regression model can be used to answer this:
+
+we are finding the value of trees for each property and then summing it up.
+Finally dividing the total value by the number of trees space and thereby we get the mean value of each tree
+
+
+```{r}
+summarized.properties.sample<-mutate(summarized.properties.sample,trees.value = (PRICE*(trees.coefficient.percent/100)))
+summarized.properties.sample<-mutate(summarized.properties.sample,no.of.trees = (trees/(pi*12.5*12.5)))
+mean.value.per.tree<- sum((summarized.properties.sample$trees.value)/sum(summarized.properties.sample$no.of.trees))
+
+print(mean.value.per.tree)
+
+```
+The mean value of per tree is -0.566669
+
+
+
+### Question 3
+(3) What is the mean rebate per square foot of rain garden and per tree the municipality should offer property owners to incentivize their installation? See Section 3 for additional assumptions. 
+
+**ANSWER**
+The mean rebate can be calculated by adding the value of open space or tree by its corresponding installation costs.
+From the data given, we can find out the mean installation cost per sqft of rain garden is 6.
+
+From the data given, we can find out the mean installation cost per tree is 20.
+Adding those two installation costs to the compensation value, we get the following results:
+
+
+```{r}
+mean.reabte.per.sq.ft.of.rain.garden<-mean.value.per.sq.ft.of.open.space + 6
+mean.reabte.per.tree<-abs(mean.value.per.tree) + 20
+
+```
+
+```{r}
+mean.reabte.per.sq.ft.of.rain.garden
+
+```
+
+```{r}
+mean.reabte.per.tree
+
+```
+
+### Question 4
+
+(4) On the basis of rebate per overflow reduced, what five areas of the city (sewersheds) are the most cost effective at reducing combined sewer overflows? 
+
+On evaluation, we find that installing trees is a better choice, since it has more  stormwater runoff value per one unit of rebate than the rain gardens.
+The following calculation has been done considering the trees as installation.
+
+
+```{r}
+
+summarized.properties.sample<-mutate(summarized.properties.sample,no.of.proposed.trees =(open.space/(pi*12.5*12.5)))
+summarized.properties.sample<-mutate(summarized.properties.sample,proposed.rebate = no.of.proposed.trees *  mean.reabte.per.tree ) 
+summarized.properties.sample<-mutate(summarized.properties.sample,proposed.runoff.reduced = no.of.proposed.trees*1000)
+
+sewershed.joined.data<-inner_join(summarized.properties.sample,sewersheds.distinct,by="PARID")
+
+sewershed.grouped.data<-sewershed.joined.data%>% group_by(sewershed)%>% summarise(total.rebate = sum(proposed.rebate),
+total.overflow.reduced=sum(proposed.runoff.reduced))
+
+sewershed.cso.data<-sewersheds%>% group_by(sewershed)%>% summarise(mean.cso = mean(CSOperInfl))
+
+final.data.sample<-inner_join(sewershed.grouped.data,sewershed.cso.data)
+
+
+final.data.sample<-mutate(final.data.sample,cso.reduced = total.overflow.reduced*mean.cso)
+
+final.data.sample<-mutate(final.data.sample,rebate.per.cso.overflow.reduced = total.rebate/cso.reduced)
+
+
+final.data.sample <- final.data.sample %>% arrange(rebate.per.cso.overflow.reduced)
+
+
+
+```
+
+
+
+
+The top five areas of the city (sewersheds) which are the most cost effective at reducing combined sewer overflows:
+
+
+```{r}
+head(final.data.sample,n=5)
+```
+
+
+### Conclusion
+
+With reference to the facts and derivates  provided, we can conclude that installing trees in the open space of the M15, A60, M19, M29, M16 sewersheds is the most cost effective strategy for the Pitstburgh municipality.
+
+####  REFERENCES
+
+Blackhurst. MF. (2017). "Parcel Scale Green Infrastructure Siting and Cost Effectiveness Analysis." http://sb.ucsur.pitt.edu/green-infrastructure/
+
+Allegheny County. “Allegheny County Urban Tree Canopy.” Division of Computer Services Geographic Information Systems Group, 2010. http://www.pasda.psu.edu/uci/MetadataDisplay.aspx?entry=PASDA&file=AlleghenyCountyUrbanTreeCanopy2010.xml&dataset=1203.
